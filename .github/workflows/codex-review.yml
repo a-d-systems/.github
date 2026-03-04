@@ -38,7 +38,7 @@ jobs:
   review:
     name: Codex Review
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ vars.CODEX_REVIEW_TIMEOUT || 15 }}
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
       REVIEW_FOCUS: ${{ inputs.review_focus }}
