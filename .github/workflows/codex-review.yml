@@ -3,6 +3,10 @@
 # PRに対してCodex CLIでコードレビューを実行し、結果をPRコメントとして投稿する。
 # Phase 1: レビュー結果の投稿のみ。修正はDeveloperがlocal Claude Codeで対応。
 #
+# トリガー:
+#   - PR作成（ready状態）/ ドラフト→ready / ready状態でpush
+#   - PRコメントで @codex メンション
+#
 # 呼び出し側の設定例は codex-review-caller.yml を参照。
 
 name: Codex Review
@@ -10,6 +14,10 @@ name: Codex Review
 on:
   workflow_call:
     inputs:
+      pr_number:
+        description: "PR番号"
+        type: number
+        required: true
       max_iterations:
         description: "最大レビュー反復回数（Phase 2以降で自動修正ループに使用）"
         type: number
@@ -32,11 +40,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
       REVIEW_FOCUS: ${{ inputs.review_focus }}
     steps:
+      - name: Resolve PR details
+        id: pr
+        run: |
+          PR_JSON=$(gh pr view "${{ inputs.pr_number }}" --repo "${{ github.repository }}" --json baseRefOid,headRefOid,headRefName)
+          BASE_SHA=$(echo "$PR_JSON" | jq -r '.baseRefOid')
+          HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
+          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -52,8 +68,11 @@ jobs:
 
       - name: Assess scale and collect diff
         id: assess
+        env:
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
-          DIFF_RANGE="${PR_BASE_SHA}...${PR_HEAD_SHA}"
+          DIFF_RANGE="${BASE_SHA}...${HEAD_SHA}"
 
           STAT=$(git diff "${DIFF_RANGE}" --stat)
           FILE_COUNT=$(git diff "${DIFF_RANGE}" --name-only | wc -l | tr -d ' ')
@@ -181,13 +200,11 @@ jobs:
 
       - name: Aggregate results and post PR comment
         env:
-          GH_TOKEN: ${{ github.token }}
+          SCALE: ${{ steps.assess.outputs.scale }}
+          FILE_COUNT: ${{ steps.assess.outputs.file_count }}
+          LINE_COUNT: ${{ steps.assess.outputs.line_count }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
         run: |
-          SCALE="${{ steps.assess.outputs.scale }}"
-          FILE_COUNT="${{ steps.assess.outputs.file_count }}"
-          LINE_COUNT="${{ steps.assess.outputs.line_count }}"
-
-          # Parse arch results
           ARCH_OK="N/A"
           ARCH_SUMMARY=""
           ARCH_ISSUES=""
@@ -197,12 +214,10 @@ jobs:
             ARCH_ISSUES=$(jq -r '(.issues // [])[] | "| \(.severity) | \(.category) | `\(.file)`:\(.lines) | \(.problem) | \(.recommendation) |"' /tmp/arch_result.json 2>/dev/null || echo "")
           fi
 
-          # Parse diff results
           DIFF_OK=$(jq -r '.ok' /tmp/diff_result.json 2>/dev/null || echo "error")
           DIFF_SUMMARY=$(jq -r '.summary // ""' /tmp/diff_result.json 2>/dev/null || echo "")
           DIFF_ISSUES=$(jq -r '(.issues // [])[] | "| \(.severity) | \(.category) | `\(.file)`:\(.lines) | \(.problem) | \(.recommendation) |"' /tmp/diff_result.json 2>/dev/null || echo "")
 
-          # Determine overall status
           if [ "$ARCH_OK" = "false" ] || [ "$DIFF_OK" = "false" ]; then
             OVERALL_ICON="❌"
             OVERALL_TEXT="Blocking issues found"
@@ -213,7 +228,6 @@ jobs:
             OVERALL_OK="true"
           fi
 
-          # Build comment body
           {
             echo "## Codex Review Result"
             echo ""

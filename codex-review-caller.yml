@@ -4,20 +4,45 @@
 # 配置先: pce_web, pce_flutter, pce_bc_api, pce_web_explorer, pce_account, pce_db 等
 #
 # 前提:
-#   - リポの Settings > Secrets に OPENAI_API_KEY を設定済み
-#     (Organization secretsとして一括設定を推奨)
+#   - Organization Secrets に OPENAI_API_KEY を設定済み
+#
+# トリガー:
+#   1. ready状態のPR作成時
+#   2. ドラフト→ready変更時
+#   3. ready状態のPRにpush時
+#   4. PRコメントで @codex メンション時
 
 name: Codex Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, ready_for_review]
     branches: [main, develop]
+  issue_comment:
+    types: [created]
 
 jobs:
-  codex-review:
+  # --- PRイベントトリガー（ドラフト除外） ---
+  review-on-pr:
+    if: >-
+      github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft
     uses: a-d-systems/.github/.github/workflows/codex-review.yml@main
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      # review_focus: "Prisma, GraphQL"  # リポ固有の重点観点（任意）
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    # with:
-    #   review_focus: "GraphQL schema, auth"  # リポ固有の重点観点（任意）
+
+  # --- @codex コメントトリガー ---
+  review-on-mention:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@codex')
+    uses: a-d-systems/.github/.github/workflows/codex-review.yml@main
+    with:
+      pr_number: ${{ github.event.issue.number }}
+      # review_focus: "Prisma, GraphQL"  # リポ固有の重点観点（任意）
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
