@@ -1,0 +1,81 @@
+name: 機能改善・新機能
+description: プロダクト改善や新機能の実装
+labels: ["needs-spec"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 機能改善・新機能リクエスト
+        できるだけ具体的に記載してください。`ai-ready` ラベルが付くまでDev Managerが実装方針を追記します。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      description: ビジネス/UX上の目的。なぜこの改善が必要か
+    validations:
+      required: true
+
+  - type: textarea
+    id: business-impact
+    attributes:
+      label: ビジネスインパクト
+      description: この改善がユーザーやビジネスにどう影響するか（リリースノート生成の素材になります）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: repository
+    attributes:
+      label: 対象リポジトリ
+      multiple: true
+      options:
+        - pce_web
+        - pce_flutter
+        - pce_bc_api
+        - pce_web_explorer
+        - pce_account
+        - pce_db
+        - pc_foundation
+        - pce_badge
+        - その他
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: 現状の挙動
+      description: スクリーンショットや具体的な手順
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: 期待する挙動
+      description: デザインカンプがあればFigmaリンクを添付
+
+  - type: textarea
+    id: implementation-plan
+    attributes:
+      label: 実装方針（Dev Manager記載）
+      description: |
+        変更対象のファイル・コンポーネント・APIの指定
+        既存コードとの整合性の注意点
+        エッジケースへの対応方針
+      value: |
+        <!-- Dev Managerが記載。記載後に `ai-ready` ラベルを付与 -->
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: 受け入れ基準
+      description: QAチームが検証する際のチェックリスト
+      value: |
+        - [ ]
+        - [ ]
+
+  - type: textarea
+    id: impact-scope
+    attributes:
+      label: 影響範囲
+      description: 他リポへの影響、DBマイグレーション有無

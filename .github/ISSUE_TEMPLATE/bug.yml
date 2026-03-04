@@ -1,0 +1,86 @@
+name: バグ報告
+description: 不具合の報告
+labels: ["bug", "needs-spec"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## バグ報告
+        再現手順をできるだけ具体的に記載してください。
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待する挙動
+      description: 正しくはどう動くべきか
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の挙動
+      description: スクリーンショットやエラーログを添付
+    validations:
+      required: true
+
+  - type: dropdown
+    id: repository
+    attributes:
+      label: 対象リポジトリ
+      multiple: true
+      options:
+        - pce_web
+        - pce_flutter
+        - pce_bc_api
+        - pce_web_explorer
+        - pce_account
+        - pce_db
+        - pc_foundation
+        - pce_badge
+        - その他
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: デバイス
+      placeholder: iPhone 15 / Pixel 8 / MacBook Pro など
+
+  - type: input
+    id: os-browser
+    attributes:
+      label: OS / ブラウザ
+      placeholder: iOS 18 Safari / Android 15 Chrome / macOS Sequoia Chrome 131
+
+  - type: input
+    id: app-version
+    attributes:
+      label: アプリバージョン
+      placeholder: v1.2.3
+
+  - type: input
+    id: sentry
+    attributes:
+      label: Sentry Issue（あれば）
+      placeholder: https://us.sentry.io/issues/...
+
+  - type: textarea
+    id: implementation-plan
+    attributes:
+      label: 実装方針（Dev Manager記載）
+      description: 原因調査後にDev Managerが追記
+      value: |
+        <!-- Dev Managerが記載。記載後に `ai-ready` ラベルを付与 -->
