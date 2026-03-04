@@ -1,0 +1,23 @@
+# 各リポの .github/workflows/ に配置するCaller Workflow
+#
+# ファイル名: .github/workflows/codex-review.yml
+# 配置先: pce_web, pce_flutter, pce_bc_api, pce_web_explorer, pce_account, pce_db 等
+#
+# 前提:
+#   - リポの Settings > Secrets に OPENAI_API_KEY を設定済み
+#     (Organization secretsとして一括設定を推奨)
+
+name: Codex Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, develop]
+
+jobs:
+  codex-review:
+    uses: a-d-systems/.github/.github/workflows/codex-review.yml@main
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    # with:
+    #   review_focus: "GraphQL schema, auth"  # リポ固有の重点観点（任意）
