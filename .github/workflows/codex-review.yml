@@ -38,10 +38,12 @@ jobs:
   review:
     name: Codex Review
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ vars.CODEX_REVIEW_TIMEOUT || 15 }}
     env:
       GH_TOKEN: ${{ github.token }}
       REVIEW_FOCUS: ${{ inputs.review_focus }}
+      CODEX_MODEL: ${{ vars.CODEX_REVIEW_MODEL || 'gpt-5.3-codex' }}
+      MAX_ITERATIONS: ${{ inputs.max_iterations || vars.CODEX_MAX_ITERATIONS || 3 }}
     steps:
       - name: Resolve PR details
         id: pr
@@ -64,7 +66,10 @@ jobs:
           node-version: "24"
 
       - name: Install Codex CLI
-        run: npm install -g @openai/codex
+        run: |
+          npm install -g @openai/codex
+          codex --version
+          codex --help 2>&1 | head -20 || true
 
       - name: Assess scale and collect diff
         id: assess
@@ -138,8 +143,8 @@ jobs:
 
           ${PROMPT}"
 
-          RESULT=$(codex exec --sandbox read-only "${FULL_PROMPT}" 2>/dev/null) || \
-            RESULT='{"ok":true,"phase":"arch","summary":"arch review skipped (execution error)","issues":[],"notes_for_next_review":""}'
+          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>&1) || \
+            RESULT='{"ok":false,"phase":"arch","summary":"arch review failed (codex exec error — check CI logs)","issues":[{"severity":"blocking","category":"correctness","file":"N/A","lines":"N/A","problem":"Codex CLI execution failed","recommendation":"Check OPENAI_API_KEY and codex CLI compatibility"}],"notes_for_next_review":""}'
 
           echo "$RESULT" > /tmp/arch_result.json
 
@@ -193,8 +198,8 @@ jobs:
 
           ${PROMPT}"
 
-          RESULT=$(codex exec --sandbox read-only "${FULL_PROMPT}" 2>/dev/null) || \
-            RESULT='{"ok":true,"phase":"diff","summary":"diff review skipped (execution error)","issues":[],"notes_for_next_review":""}'
+          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>&1) || \
+            RESULT='{"ok":false,"phase":"diff","summary":"diff review failed (codex exec error — check CI logs)","issues":[{"severity":"blocking","category":"correctness","file":"N/A","lines":"N/A","problem":"Codex CLI execution failed","recommendation":"Check OPENAI_API_KEY and codex CLI compatibility"}],"notes_for_next_review":""}'
 
           echo "$RESULT" > /tmp/diff_result.json
 
