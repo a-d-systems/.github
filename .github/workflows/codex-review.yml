@@ -1,6 +1,6 @@
 # Codex Review — 組織共通の再利用可能ワークフロー
 #
-# PRに対してCodex CLIでコードレビューを実行し、結果をPRコメントとして投稿する。
+# PRに対してCodex公式GitHub Actionでコードレビューを実行し、結果をPRコメントとして投稿する。
 # Phase 1: レビュー結果の投稿のみ。修正はDeveloperがlocal Claude Codeで対応。
 #
 # トリガー:
@@ -18,10 +18,6 @@ on:
         description: "PR番号"
         type: number
         required: true
-      max_iterations:
-        description: "最大レビュー反復回数（Phase 2以降で自動修正ループに使用）"
-        type: number
-        default: 1
       review_focus:
         description: "重点レビュー観点（省略時はデフォルト観点）"
         type: string
@@ -41,256 +37,92 @@ jobs:
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
-      REVIEW_FOCUS: ${{ inputs.review_focus }}
-      CODEX_MODEL: ${{ vars.CODEX_REVIEW_MODEL || 'gpt-5.3-codex' }}
-      MAX_ITERATIONS: ${{ inputs.max_iterations || vars.CODEX_MAX_ITERATIONS || 3 }}
     steps:
-      - name: Resolve PR details
-        id: pr
-        run: |
-          PR_JSON=$(gh pr view "${{ inputs.pr_number }}" --repo "${{ github.repository }}" --json baseRefOid,headRefOid,headRefName)
-          BASE_SHA=$(echo "$PR_JSON" | jq -r '.baseRefOid')
-          HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
-          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
-          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-          echo "pr_number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout (merge ref)
+        uses: actions/checkout@v5
         with:
+          ref: refs/pull/${{ inputs.pr_number }}/merge
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Install Codex CLI
-        run: |
-          npm install -g @openai/codex
-          codex --version
-          codex --help 2>&1 | head -20 || true
-
-      - name: Assess scale and collect diff
-        id: assess
+      - name: Pre-fetch base and head refs
         env:
-          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
-          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
-          DIFF_RANGE="${BASE_SHA}...${HEAD_SHA}"
+          BASE_REF=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" --json baseRefName -q '.baseRefName')
+          git fetch --no-tags origin "${BASE_REF}" "+refs/pull/${PR_NUMBER}/head"
 
-          STAT=$(git diff "${DIFF_RANGE}" --stat)
-          FILE_COUNT=$(git diff "${DIFF_RANGE}" --name-only | wc -l | tr -d ' ')
-          LINE_COUNT=$(git diff "${DIFF_RANGE}" --numstat | awk '{s+=$1+$2} END {print s+0}')
-          CHANGED_FILES=$(git diff "${DIFF_RANGE}" --name-only | head -50)
-
-          if [ "$FILE_COUNT" -le 3 ] && [ "$LINE_COUNT" -le 100 ]; then
-            SCALE="small"
-          elif [ "$FILE_COUNT" -le 10 ] && [ "$LINE_COUNT" -le 500 ]; then
-            SCALE="medium"
-          else
-            SCALE="large"
-          fi
-
-          echo "scale=${SCALE}" >> "$GITHUB_OUTPUT"
-          echo "diff_range=${DIFF_RANGE}" >> "$GITHUB_OUTPUT"
-          echo "file_count=${FILE_COUNT}" >> "$GITHUB_OUTPUT"
-          echo "line_count=${LINE_COUNT}" >> "$GITHUB_OUTPUT"
-
-          echo "${STAT}" > /tmp/diff_stat.txt
-          echo "${CHANGED_FILES}" > /tmp/changed_files.txt
-
-      - name: Run architecture review (medium/large only)
-        if: steps.assess.outputs.scale != 'small'
+      - name: Build review prompt
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          DIFF_RANGE: ${{ steps.assess.outputs.diff_range }}
+          REVIEW_FOCUS: ${{ inputs.review_focus }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
+          BASE_REF=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" --json baseRefName -q '.baseRefName')
+
           FOCUS_LINE=""
-          if [ -n "$REVIEW_FOCUS" ]; then
+          if [ -n "${REVIEW_FOCUS}" ]; then
             FOCUS_LINE="重点観点: ${REVIEW_FOCUS}"
           fi
 
-          read -r -d '' PROMPT << 'PROMPT_EOF' || true
-          以下の変更のアーキテクチャ整合性をレビューせよ。出力はJSON1つのみ。
+          cat > /tmp/review_prompt.md << PROMPT_EOF
+          このPRの変更をレビューせよ。
 
-          これはCI上のレビューゲートとして実行されている。blocking が1件でもあれば ok: false とし、修正→再レビューで収束させる前提で指摘せよ。
-
-          観点: 依存関係、責務分割、破壊的変更、セキュリティ設計
-
-          出力JSONスキーマ:
-          {
-            "ok": boolean,
-            "phase": "arch",
-            "summary": "レビューの要約",
-            "issues": [
-              {
-                "severity": "blocking | advisory",
-                "category": "correctness | security | perf | maintainability | testing | style",
-                "file": "ファイルパス",
-                "lines": "行範囲",
-                "problem": "問題の説明",
-                "recommendation": "修正案"
-              }
-            ],
-            "notes_for_next_review": "次回レビュー用メモ"
-          }
-          severity: blocking=修正必須(1件でもあればok:false), advisory=推奨(ok:trueでも出力可)
-          PROMPT_EOF
-
-          FULL_PROMPT="diff_range: ${DIFF_RANGE}
-          ${FOCUS_LINE}
-
-          ${PROMPT}"
-
-          set +e
-          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>/tmp/arch_stderr.txt)
-          EXIT_CODE=$?
-          set -e
-
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "::warning::codex exec (arch) failed with exit code ${EXIT_CODE}"
-            echo "--- stderr ---"
-            cat /tmp/arch_stderr.txt
-            echo "--- end stderr ---"
-            ERR_MSG=$(head -1 /tmp/arch_stderr.txt | tr '"' "'")
-            RESULT="{\"ok\":false,\"phase\":\"arch\",\"summary\":\"arch review failed: ${ERR_MSG}\",\"issues\":[{\"severity\":\"blocking\",\"category\":\"correctness\",\"file\":\"N/A\",\"lines\":\"N/A\",\"problem\":\"Codex CLI exit code ${EXIT_CODE}\",\"recommendation\":\"${ERR_MSG}\"}],\"notes_for_next_review\":\"\"}"
-          fi
-
-          echo "$RESULT" > /tmp/arch_result.json
-
-      - name: Run diff review
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          DIFF_RANGE: ${{ steps.assess.outputs.diff_range }}
-        run: |
-          TARGET_FILES=$(cat /tmp/changed_files.txt)
-          FOCUS_LINE=""
-          if [ -n "$REVIEW_FOCUS" ]; then
-            FOCUS_LINE="重点観点: ${REVIEW_FOCUS}"
-          fi
-
-          ARCH_NOTES=""
-          if [ -f /tmp/arch_result.json ]; then
-            ARCH_NOTES=$(jq -r '.notes_for_next_review // ""' /tmp/arch_result.json 2>/dev/null || echo "")
-          fi
-
-          read -r -d '' PROMPT << 'PROMPT_EOF' || true
-          以下の変更をレビューせよ。出力はJSON1つのみ。
-
-          これはCI上のレビューゲートとして実行されている。blocking が1件でもあれば ok: false とし、修正→再レビューで収束させる前提で指摘せよ。
+          base branch: origin/${BASE_REF}
 
           観点: correctness, security, perf, maintainability, testing, style
+          ${FOCUS_LINE}
 
-          出力JSONスキーマ:
-          {
-            "ok": boolean,
-            "phase": "diff",
-            "summary": "レビューの要約",
-            "issues": [
-              {
-                "severity": "blocking | advisory",
-                "category": "correctness | security | perf | maintainability | testing | style",
-                "file": "ファイルパス",
-                "lines": "行範囲",
-                "problem": "問題の説明",
-                "recommendation": "修正案"
-              }
-            ],
-            "notes_for_next_review": "次回レビュー用メモ"
-          }
-          severity: blocking=修正必須(1件でもあればok:false), advisory=推奨(ok:trueでも出力可)
+          レビュー結果は以下のフォーマットで出力せよ:
+
+          ## Codex Review Result
+
+          | | |
+          |---|---|
+          | **Status** | ✅ OK or ❌ Blocking issues found |
+
+          ### Summary
+          変更の要約
+
+          ### Issues（問題がある場合のみ）
+
+          | Severity | Category | Location | Problem | Recommendation |
+          |---|---|---|---|---|
+          | blocking/advisory | category | file:lines | 問題 | 修正案 |
+
+          ---
+          *Codex Review (Phase 1) — auto-generated. Fix locally with Claude Code, then push to re-trigger.*
           PROMPT_EOF
 
-          FULL_PROMPT="diff_range: ${DIFF_RANGE}
-          対象: ${TARGET_FILES}
-          ${FOCUS_LINE}
-          前回メモ: ${ARCH_NOTES}
+      - name: Run Codex Review
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: ${{ vars.CODEX_REVIEW_MODEL || 'gpt-5.3-codex' }}
+          prompt-file: /tmp/review_prompt.md
+          sandbox: read-only
+          safety-strategy: drop-sudo
 
-          ${PROMPT}"
-
-          set +e
-          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>/tmp/diff_stderr.txt)
-          EXIT_CODE=$?
-          set -e
-
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "::warning::codex exec (diff) failed with exit code ${EXIT_CODE}"
-            echo "--- stderr ---"
-            cat /tmp/diff_stderr.txt
-            echo "--- end stderr ---"
-            ERR_MSG=$(head -1 /tmp/diff_stderr.txt | tr '"' "'")
-            RESULT="{\"ok\":false,\"phase\":\"diff\",\"summary\":\"diff review failed: ${ERR_MSG}\",\"issues\":[{\"severity\":\"blocking\",\"category\":\"correctness\",\"file\":\"N/A\",\"lines\":\"N/A\",\"problem\":\"Codex CLI exit code ${EXIT_CODE}\",\"recommendation\":\"${ERR_MSG}\"}],\"notes_for_next_review\":\"\"}"
-          fi
-
-          echo "$RESULT" > /tmp/diff_result.json
-
-      - name: Aggregate results and post PR comment
+      - name: Post review comment
         env:
-          SCALE: ${{ steps.assess.outputs.scale }}
-          FILE_COUNT: ${{ steps.assess.outputs.file_count }}
-          LINE_COUNT: ${{ steps.assess.outputs.line_count }}
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          CODEX_OUTPUT: ${{ steps.codex.outputs.final-message }}
         run: |
-          ARCH_OK="N/A"
-          ARCH_SUMMARY=""
-          ARCH_ISSUES=""
-          if [ -f /tmp/arch_result.json ]; then
-            ARCH_OK=$(jq -r '.ok' /tmp/arch_result.json 2>/dev/null || echo "error")
-            ARCH_SUMMARY=$(jq -r '.summary // ""' /tmp/arch_result.json 2>/dev/null || echo "")
-            ARCH_ISSUES=$(jq -r '(.issues // [])[] | "| \(.severity) | \(.category) | `\(.file)`:\(.lines) | \(.problem) | \(.recommendation) |"' /tmp/arch_result.json 2>/dev/null || echo "")
+          if [ -z "${CODEX_OUTPUT}" ]; then
+            BODY="## Codex Review Result
+
+          | | |
+          |---|---|
+          | **Status** | ⚠️ Review produced no output — check CI logs |
+
+          ---
+          *Codex Review (Phase 1) — auto-generated.*"
+            gh pr comment "${PR_NUMBER}" --body "${BODY}"
+            exit 1
           fi
 
-          DIFF_OK=$(jq -r '.ok' /tmp/diff_result.json 2>/dev/null || echo "error")
-          DIFF_SUMMARY=$(jq -r '.summary // ""' /tmp/diff_result.json 2>/dev/null || echo "")
-          DIFF_ISSUES=$(jq -r '(.issues // [])[] | "| \(.severity) | \(.category) | `\(.file)`:\(.lines) | \(.problem) | \(.recommendation) |"' /tmp/diff_result.json 2>/dev/null || echo "")
+          gh pr comment "${PR_NUMBER}" --body "${CODEX_OUTPUT}"
 
-          if [ "$ARCH_OK" = "false" ] || [ "$DIFF_OK" = "false" ]; then
-            OVERALL_ICON="❌"
-            OVERALL_TEXT="Blocking issues found"
-            OVERALL_OK="false"
-          else
-            OVERALL_ICON="✅"
-            OVERALL_TEXT="OK"
-            OVERALL_OK="true"
-          fi
-
-          {
-            echo "## Codex Review Result"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| **Status** | ${OVERALL_ICON} ${OVERALL_TEXT} |"
-            echo "| **Scale** | ${SCALE} (${FILE_COUNT} files, ${LINE_COUNT} lines) |"
-            echo ""
-            echo "### Summary"
-            echo ""
-            echo "${DIFF_SUMMARY}"
-
-            if [ -n "$ARCH_SUMMARY" ]; then
-              echo ""
-              echo "**Architecture:** ${ARCH_SUMMARY}"
-            fi
-
-            ALL_ISSUES="${ARCH_ISSUES}${DIFF_ISSUES}"
-            if [ -n "$ALL_ISSUES" ]; then
-              echo ""
-              echo "### Issues"
-              echo ""
-              echo "| Severity | Category | Location | Problem | Recommendation |"
-              echo "|---|---|---|---|---|"
-              echo "${ARCH_ISSUES}"
-              echo "${DIFF_ISSUES}"
-            fi
-
-            echo ""
-            echo "---"
-            echo "*Codex Review (Phase 1) — auto-generated. Fix locally with Claude Code, then push to re-trigger.*"
-          } > /tmp/pr_comment.md
-
-          gh pr comment "${PR_NUMBER}" --body-file /tmp/pr_comment.md
-
-          if [ "$OVERALL_OK" = "false" ]; then
+          if echo "${CODEX_OUTPUT}" | grep -qi "blocking"; then
             echo "::error::Codex Review found blocking issues"
             exit 1
           fi
