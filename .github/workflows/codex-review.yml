@@ -143,8 +143,19 @@ jobs:
 
           ${PROMPT}"
 
-          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>&1) || \
-            RESULT='{"ok":false,"phase":"arch","summary":"arch review failed (codex exec error — check CI logs)","issues":[{"severity":"blocking","category":"correctness","file":"N/A","lines":"N/A","problem":"Codex CLI execution failed","recommendation":"Check OPENAI_API_KEY and codex CLI compatibility"}],"notes_for_next_review":""}'
+          set +e
+          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>/tmp/arch_stderr.txt)
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::warning::codex exec (arch) failed with exit code ${EXIT_CODE}"
+            echo "--- stderr ---"
+            cat /tmp/arch_stderr.txt
+            echo "--- end stderr ---"
+            ERR_MSG=$(head -1 /tmp/arch_stderr.txt | tr '"' "'")
+            RESULT="{\"ok\":false,\"phase\":\"arch\",\"summary\":\"arch review failed: ${ERR_MSG}\",\"issues\":[{\"severity\":\"blocking\",\"category\":\"correctness\",\"file\":\"N/A\",\"lines\":\"N/A\",\"problem\":\"Codex CLI exit code ${EXIT_CODE}\",\"recommendation\":\"${ERR_MSG}\"}],\"notes_for_next_review\":\"\"}"
+          fi
 
           echo "$RESULT" > /tmp/arch_result.json
 
@@ -198,8 +209,19 @@ jobs:
 
           ${PROMPT}"
 
-          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>&1) || \
-            RESULT='{"ok":false,"phase":"diff","summary":"diff review failed (codex exec error — check CI logs)","issues":[{"severity":"blocking","category":"correctness","file":"N/A","lines":"N/A","problem":"Codex CLI execution failed","recommendation":"Check OPENAI_API_KEY and codex CLI compatibility"}],"notes_for_next_review":""}'
+          set +e
+          RESULT=$(codex exec -m "${CODEX_MODEL}" --sandbox read-only "${FULL_PROMPT}" 2>/tmp/diff_stderr.txt)
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::warning::codex exec (diff) failed with exit code ${EXIT_CODE}"
+            echo "--- stderr ---"
+            cat /tmp/diff_stderr.txt
+            echo "--- end stderr ---"
+            ERR_MSG=$(head -1 /tmp/diff_stderr.txt | tr '"' "'")
+            RESULT="{\"ok\":false,\"phase\":\"diff\",\"summary\":\"diff review failed: ${ERR_MSG}\",\"issues\":[{\"severity\":\"blocking\",\"category\":\"correctness\",\"file\":\"N/A\",\"lines\":\"N/A\",\"problem\":\"Codex CLI exit code ${EXIT_CODE}\",\"recommendation\":\"${ERR_MSG}\"}],\"notes_for_next_review\":\"\"}"
+          fi
 
           echo "$RESULT" > /tmp/diff_result.json
 
